@@ -1,0 +1,232 @@
+=============================== Main.tf ====================
+terraform {
+  required_version = "1.2.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "4.15.0"
+    }
+  }
+}
+
+provider "aws" {
+  region  = var.region
+  profile = var.profile
+}
+========================================= backend.tf ============================
+terraform {
+  backend "s3" {
+    bucket = "<bucket-name>"
+    key    = "<statefile-name>.tfstate"
+    region = "<region>"
+  }
+}
+=============================== VPC.tf ===================================
+resource "aws_vpc" "default" {
+  cidr_block           = var.vpc_cidr_block
+  enable_dns_hostnames = true
+  instance_tenancy     = "default"
+
+  tags = {
+    Name = var.vpc_name
+  }
+}
+
+resource "aws_internet_gateway" "default-gw" {
+  vpc_id = aws_vpc.default.id
+
+  tags = {
+    Name = "${var.vpc_name}-IGW"
+  }
+}
+=================================== Subnets.tf ================================
+resource "aws_subnet" "public-subnets" {
+  count                   = length(var.public_subnet_cidr)
+  vpc_id                  = aws_vpc.default.id
+  cidr_block              = element(var.public_subnet_cidr, count.index)
+  availability_zone       = element(var.azs, count.index)
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.vpc_name}-publicsubnet-${count.index + 1}"
+  }
+}
+
+resource "aws_subnet" "private-subnets" {
+  count                   = length(var.private_subnet_cidr)
+  vpc_id                  = aws_vpc.default.id
+  cidr_block              = element(var.private_subnet_cidr, count.index)
+  availability_zone       = element(var.azs, count.index)
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.vpc_name}-privatesubnet-${count.index + 1}"
+  }
+}
+========================================= route.tf ===========================================
+resource "aws_route_table" "terraform-public" {
+  vpc_id = aws_vpc.default.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.default-gw.id
+  }
+  tags = {
+    Name = "${var.vpc_name}-Public-Table"
+  }
+}
+
+resource "aws_route_table" "terraform-private" {
+  vpc_id = aws_vpc.default.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_nat_gateway.prod-nat.id
+  }
+  tags = {
+    Name = "${var.vpc_name}-Private-Table"
+  }
+}
+=============================================== route_association.tf ============================
+resource "aws_route_table_association" "public-subnets-assoc" {
+  count          = length(var.public_subnet_cidr)
+  subnet_id      = element(aws_subnet.public-subnets.*.id, count.index)
+  route_table_id = aws_route_table.terraform-public.id
+}
+
+resource "aws_route_table_association" "private-subnets-assoc" {
+  count          = length(var.private_subnet_cidr)
+  subnet_id      = element(aws_subnet.private-subnets.*.id, count.index)
+  route_table_id = aws_route_table.terraform-private.id
+}
+================================================== sg.tf ===========================================
+resource "aws_security_group" "allow_all" {
+  name        = "allow_all"
+  description = "Allow all inbound traffic"
+  vpc_id      = aws_vpc.default.id
+
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+============================================== ElasticIP_NAT.tf ==============================================
+resource "aws_eip" "EIP-NAT" {
+  tags = {
+    Name = "NAT-EIP"
+  }
+}
+
+
+resource "aws_nat_gateway" "prod-nat" {
+  allocation_id = aws_eip.EIP-NAT.id
+  subnet_id     = aws_subnet.public-subnets.0.id
+
+  tags = {
+    Name = "prod-NAT-gw"
+  }
+
+  # To ensure proper ordering, it is recommended to add an explicit dependency
+  # on the Internet Gateway for the VPC.
+  depends_on = [aws_internet_gateway.default-gw]
+}
+========================================= EC2.tf =================================================
+resource "aws_instance" "public" {
+  count                       = length(var.public_subnet_cidr)
+  ami                         = var.imagename
+  availability_zone           = element(var.azs, count.index)
+  instance_type               = var.instance_type
+  key_name                    = var.key_name
+  subnet_id                   = element(aws_subnet.public-subnets.*.id, count.index)
+  vpc_security_group_ids      = ["${aws_security_group.allow_all.id}"]
+  associate_public_ip_address = true
+
+    user_data = <<EOF
+    #!/bin/bash
+    sudo apt update -y
+    sudo apt install -y nginx 
+    sudo apt install -y jq wget unzip vim nano net-tools
+    echo "<h1> Deployed via Terraform on ${var.vpc_name}-PublicServer-${count.index + 1} </h1>" | sudo tee /var/www/html/index.nginx-debian.html
+    EOF
+    
+  tags = {
+    Name       = "${var.vpc_name}-PublicServer-${count.index + 1}"
+    Env        = "Prod"
+    Owner      = "Sree"
+    CostCenter = "ABCD"
+  }
+}
+
+resource "aws_instance" "private" {
+  count                       = length(var.public_subnet_cidr)
+  ami                         = var.imagename
+  availability_zone           = element(var.azs, count.index)
+  instance_type               = var.instance_type
+  key_name                    = var.key_name
+  subnet_id                   = element(aws_subnet.private-subnets.*.id, count.index)
+  vpc_security_group_ids      = ["${aws_security_group.allow_all.id}"]
+  associate_public_ip_address = true
+
+    user_data = <<EOF
+    #!/bin/bash
+    sudo apt update -y
+    sudo apt install -y nginx 
+    sudo apt install -y jq wget unzip vim nano net-tools
+    echo "<h1> Deployed via Terraform on ${var.vpc_name}-PrivateServer-${count.index + 1} </h1>" | sudo tee /var/www/html/index.nginx-debian.html
+    EOF
+
+  tags = {
+    Name       = "${var.vpc_name}-privateServer-${count.index + 1}"
+    Env        = "Prod "
+    Owner      = "Sree"
+    CostCenter = "ABCD"
+  }
+}
+========================================================= variables.tf =================================
+# Provider
+variable "region" {}
+variable "profile" {}
+
+# VPC
+variable "vpc_cidr_block" {}
+variable "vpc_name" {}
+
+# Subnets
+variable "azs" {}
+variable "public_subnet_cidr" {}
+
+variable "private_subnet_cidr" {}
+
+# EC2
+variable "imagename" {}
+variable "instance_type" {}
+variable "key_name" {}
+======================================== terraform.tfvars ===========================================================
+# Provider
+region  = "us-east-1"
+profile = "terraform"
+
+# VPC
+vpc_name       = "Prod"
+vpc_cidr_block = "10.25.0.0/16"
+
+# Subnets
+azs                 = ["us-east-1a", "us-east-1b", "us-east-1c"]
+public_subnet_cidr  = ["10.25.1.0/24"]
+private_subnet_cidr = ["10.25.10.0/24"]
+
+# EC2
+imagename     = "ami-0c4f7023847b90238"
+instance_type = "t2.nano"
+key_name      = "LaptopKey"
+#, "10.25.2.0/24", "10.25.3.0/24", "10.25.4.0/24"
+#"10.25.10.0/24", "10.25.20.0/24", "10.25.30.0/24", "10.25.40.0/24"
