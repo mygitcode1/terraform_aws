@@ -44,7 +44,7 @@ resource "aws_subnet" "public-subnets" {
   count                   = length(var.public_subnet_cidr)
   vpc_id                  = aws_vpc.default.id
   cidr_block              = element(var.public_subnet_cidr, count.index)
-  availability_zone       = element(var.azs, count.index)
+  availability_zone       = element(lookup(var.azs, var.region), count.index)
   map_public_ip_on_launch = true
 
   tags = {
@@ -56,13 +56,14 @@ resource "aws_subnet" "private-subnets" {
   count                   = length(var.private_subnet_cidr)
   vpc_id                  = aws_vpc.default.id
   cidr_block              = element(var.private_subnet_cidr, count.index)
-  availability_zone       = element(var.azs, count.index)
+  availability_zone       = element(lookup(var.azs, var.region), count.index)
   map_public_ip_on_launch = true
 
   tags = {
     Name = "${var.vpc_name}-privatesubnet-${count.index + 1}"
   }
 }
+
 ========================================= route.tf ===========================================
 resource "aws_route_table" "terraform-public" {
   vpc_id = aws_vpc.default.id
@@ -141,23 +142,24 @@ resource "aws_nat_gateway" "prod-nat" {
 }
 ========================================= EC2.tf =================================================
 resource "aws_instance" "public" {
-  count                       = length(var.public_subnet_cidr)
-  ami                         = var.imagename
-  availability_zone           = element(var.azs, count.index)
+  count = length(var.public_subnet_cidr)
+  #ami                         = var.imagename
+  ami                         = lookup(var.amis, var.region)
+  availability_zone           = element(lookup(var.azs, var.region), count.index)
   instance_type               = var.instance_type
   key_name                    = var.key_name
   subnet_id                   = element(aws_subnet.public-subnets.*.id, count.index)
   vpc_security_group_ids      = ["${aws_security_group.allow_all.id}"]
   associate_public_ip_address = true
 
-    user_data = <<EOF
+  user_data = <<-EOF
     #!/bin/bash
     sudo apt update -y
     sudo apt install -y nginx 
     sudo apt install -y jq wget unzip vim nano net-tools
     echo "<h1> Deployed via Terraform on ${var.vpc_name}-PublicServer-${count.index + 1} </h1>" | sudo tee /var/www/html/index.nginx-debian.html
     EOF
-    
+
   tags = {
     Name       = "${var.vpc_name}-PublicServer-${count.index + 1}"
     Env        = "Prod"
@@ -167,16 +169,16 @@ resource "aws_instance" "public" {
 }
 
 resource "aws_instance" "private" {
-  count                       = length(var.public_subnet_cidr)
-  ami                         = var.imagename
-  availability_zone           = element(var.azs, count.index)
+  count                       = length(var.private_subnet_cidr)
+  ami                         = lookup(var.amis, var.region)
+  availability_zone           = element(lookup(var.azs, var.region), count.index)
   instance_type               = var.instance_type
   key_name                    = var.key_name
   subnet_id                   = element(aws_subnet.private-subnets.*.id, count.index)
   vpc_security_group_ids      = ["${aws_security_group.allow_all.id}"]
   associate_public_ip_address = true
 
-    user_data = <<EOF
+  user_data = <<-EOF
     #!/bin/bash
     sudo apt update -y
     sudo apt install -y nginx 
@@ -190,6 +192,7 @@ resource "aws_instance" "private" {
     Owner      = "Sree"
     CostCenter = "ABCD"
   }
+  depends_on = [aws_nat_gateway.prod-nat]
 }
 ========================================================= variables.tf =================================
 # Provider
@@ -207,9 +210,11 @@ variable "public_subnet_cidr" {}
 variable "private_subnet_cidr" {}
 
 # EC2
-variable "imagename" {}
+#variable "imagename" {}
 variable "instance_type" {}
 variable "key_name" {}
+variable "amis" {}
+
 ======================================== terraform.tfvars ===========================================================
 # Provider
 region  = "us-east-1"
@@ -220,13 +225,23 @@ vpc_name       = "Prod"
 vpc_cidr_block = "10.25.0.0/16"
 
 # Subnets
-azs                 = ["us-east-1a", "us-east-1b", "us-east-1c"]
+# azs                 = ["us-east-1a", "us-east-1b", "us-east-1c"]
 public_subnet_cidr  = ["10.25.1.0/24"]
 private_subnet_cidr = ["10.25.10.0/24"]
 
 # EC2
-imagename     = "ami-0c4f7023847b90238"
+#imagename     = "ami-0c4f7023847b90238"
 instance_type = "t2.nano"
 key_name      = "LaptopKey"
 #, "10.25.2.0/24", "10.25.3.0/24", "10.25.4.0/24"
 #"10.25.10.0/24", "10.25.20.0/24", "10.25.30.0/24", "10.25.40.0/24"
+amis = {
+  "us-east-1" = "ami-0c4f7023847b90238",
+  "us-east-2" = "",
+}
+
+azs = {
+  "us-east-1" = ["us-east-1a", "us-east-1b", "us-east-1c"]
+  "us-east-2" = ["us-east-2a", "us-east-2b", "us-east-2c"]
+}
+
