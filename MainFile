@@ -244,4 +244,32 @@ azs = {
   "us-east-1" = ["us-east-1a", "us-east-1b", "us-east-1c"]
   "us-east-2" = ["us-east-2a", "us-east-2b", "us-east-2c"]
 }
-
+================================================== provisioners inside ec2 ==================================================================== 
+  provisioner "file" {
+    source      = "script.sh"
+    destination = "/tmp/script.sh"
+    connection {
+      type        = "ssh"
+      user        = "ubuntu"
+      private_key = file("LaptopKey.pem")
+      #host = element(aws_instance.public-server.*.public_ip, count.index)
+      host = element(self.public_ip)
+    }
+  }
+  provisioner "remote-exec" {
+    inline = [
+      "sudo chmod 777 /tmp/script.sh",
+      "sudo /tmp/script.sh",
+    ]
+    connection {
+      type        = "ssh"
+      user        = "ubuntu"
+      private_key = file("LaptopKey.pem")
+      #host = element(aws_instance.public-server.*.public_ip, count.index)
+      host = element(self.private_ip)
+    }
+  }
+  ========================================================== lifecycle inside ec2 ============================
+    lifecycle {
+    create_before_destroy = "true"
+  }
