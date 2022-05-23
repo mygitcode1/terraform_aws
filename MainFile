@@ -16,9 +16,11 @@ provider "aws" {
 ========================================= backend.tf ============================
 terraform {
   backend "s3" {
-    bucket = "<bucket-name>"
-    key    = "<statefile-name>.tfstate"
-    region = "<region>"
+    bucket = "bhanu-gurajala.xyz"
+    key    = "functions.tfstate"
+    region = "us-east-1"
+    dynamodb_table = "devopsb22-terraform_state_lock-dynamodb"
+    encrypt =  true
   }
 }
 =============================== VPC.tf ===================================
@@ -81,13 +83,14 @@ resource "aws_route_table" "terraform-private" {
   vpc_id = aws_vpc.default.id
 
   route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_nat_gateway.prod-nat.id
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.prod-nat.id
   }
   tags = {
     Name = "${var.vpc_name}-Private-Table"
   }
 }
+
 =============================================== route_association.tf ============================
 resource "aws_route_table_association" "public-subnets-assoc" {
   count          = length(var.public_subnet_cidr)
@@ -141,8 +144,9 @@ resource "aws_nat_gateway" "prod-nat" {
   depends_on = [aws_internet_gateway.default-gw]
 }
 ========================================= EC2.tf =================================================
-resource "aws_instance" "public" {
+resource "aws_instance" "public-servers" {
   count = length(var.public_subnet_cidr)
+  #count = var.env == "prod" ? 3 : 0 
   #ami                         = var.imagename
   ami                         = lookup(var.amis, var.region)
   availability_zone           = element(lookup(var.azs, var.region), count.index)
@@ -152,24 +156,20 @@ resource "aws_instance" "public" {
   vpc_security_group_ids      = ["${aws_security_group.allow_all.id}"]
   associate_public_ip_address = true
 
-  user_data = <<-EOF
-    #!/bin/bash
-    sudo apt update -y
-    sudo apt install -y nginx 
-    sudo apt install -y jq wget unzip vim nano net-tools
-    echo "<h1> Deployed via Terraform on ${var.vpc_name}-PublicServer-${count.index + 1} </h1>" | sudo tee /var/www/html/index.nginx-debian.html
-    EOF
-
   tags = {
     Name       = "${var.vpc_name}-PublicServer-${count.index + 1}"
     Env        = "Prod"
-    Owner      = "Sree"
+    Owner      = "Bhanu"
     CostCenter = "ABCD"
+  }
+
+  lifecycle {
+    create_before_destroy = "true"
   }
 }
 
-resource "aws_instance" "private" {
-  count                       = length(var.private_subnet_cidr)
+resource "aws_instance" "private-servers" {
+  count                       = 0 #length(var.private_subnet_cidr)
   ami                         = lookup(var.amis, var.region)
   availability_zone           = element(lookup(var.azs, var.region), count.index)
   instance_type               = var.instance_type
@@ -183,13 +183,22 @@ resource "aws_instance" "private" {
     sudo apt update -y
     sudo apt install -y nginx 
     sudo apt install -y jq wget unzip vim nano net-tools
-    echo "<h1> Deployed via Terraform on ${var.vpc_name}-PrivateServer-${count.index + 1} </h1>" | sudo tee /var/www/html/index.nginx-debian.html
+    sudo git clone -b DevOpsB22 https://github.com/mygitcode1/dockertest1.git DevOpsB22 
+    cd DevOpsB22
+    sudo cp index.html /var/www/html/index.nginx-debian.html
+    sudo cp scorekeeper.js /var/www/html/scorekeeper.js 
+    sudo cp style.css /var/www/html/style.css
+    sudo service nginx restart
     EOF
+
+  lifecycle {
+    create_before_destroy = "true"
+  }
 
   tags = {
     Name       = "${var.vpc_name}-privateServer-${count.index + 1}"
     Env        = "Prod "
-    Owner      = "Sree"
+    Owner      = "Bhanu"
     CostCenter = "ABCD"
   }
   depends_on = [aws_nat_gateway.prod-nat]
@@ -244,7 +253,9 @@ azs = {
   "us-east-1" = ["us-east-1a", "us-east-1b", "us-east-1c"]
   "us-east-2" = ["us-east-2a", "us-east-2b", "us-east-2c"]
 }
-================================================== provisioners inside ec2 ==================================================================== 
+================================================== provisioners inside ec2/ null_resource.tf ==================================================================== 
+resource "null_resource" "execute-file-script" {
+  count = length(var.public_subnet_cidr)
   provisioner "file" {
     source      = "script.sh"
     destination = "/tmp/script.sh"
@@ -252,24 +263,53 @@ azs = {
       type        = "ssh"
       user        = "ubuntu"
       private_key = file("LaptopKey.pem")
-      #host = element(aws_instance.public-server.*.public_ip, count.index)
-      host = element(self.public_ip)
+      host        = element(aws_instance.public-servers.*.public_ip, count.index)
+      #host = "$(aws_instance.public-servers-.*.public_ip)"
     }
   }
   provisioner "remote-exec" {
     inline = [
       "sudo chmod 777 /tmp/script.sh",
-      "sudo /tmp/script.sh",
+      "sudo sh /tmp/script.sh",
     ]
     connection {
       type        = "ssh"
       user        = "ubuntu"
       private_key = file("LaptopKey.pem")
-      #host = element(aws_instance.public-server.*.public_ip, count.index)
-      host = element(self.private_ip)
+      host        = element(aws_instance.public-servers.*.public_ip, count.index)
+      #host = "$(aws_instance.public-servers-.*.public_ip)"
     }
   }
+}
+
   ========================================================== lifecycle inside ec2 ============================
     lifecycle {
     create_before_destroy = "true"
   }
+========================================== script.sh / ubuntu-20 ==================================
+    #!/bin/bash
+    sudo rm -rf DevOpsB22
+    sudo apt update -y
+    sudo apt install -y nginx 
+    sudo apt install -y jq wget unzip vim nano net-tools
+    sudo git clone https://github.com/mygitcode1/dockertest1.git DevOpsB22 
+    cd DevOpsB22
+    sudo cp index.html /var/www/html/index.nginx-debian.html
+    sudo cp scorekeeper.js /var/www/html/scorekeeper.js
+    sudo cp style.css /var/www/html/style.css
+    sudo service nginx restart
+    ================================= dynamoDB.tf =========================================
+    resource "aws_dynamodb_table" "devopsb22-terraform_state_lock-dynamodb" {
+  name           = "devopsb22-terraform_state_lock-dynamodb"
+  read_capacity  = 5
+  write_capacity = 5
+  hash_key       = "LockID"
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
+}
+========================================== 
+# terraform state list
+# terraform rm <resource name>
+# terraform state rm <resource name>
