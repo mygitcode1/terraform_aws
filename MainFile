@@ -332,3 +332,16 @@ resource "null_resource" "execute-file-script" {
 # terraform state list
 # terraform rm <resource name>
 # terraform state rm <resource name>
+Q: Find already deployed resources?
+	# terraform state list
+Q: How to delete an individual resource ? 
+terraform destroy -target <resource name>
+Q: Deploy some resources via terraform, cut the connection between your terraform state file and resource.
+terraform state rm <resource name>
+Note: It removes from the state file only, We need to remove it manually from code.
+
+Q: I want to rename a resource name?
+	If name changes directly in code, It destroys the resource and re-creates. So, find the resource name using # terraform state list.
+Now, rename it with command # terraform mv <old resource name> <new resource name>
+Note: Now I need to change our code as well.
+
