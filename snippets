@@ -1,0 +1,90 @@
+# VPC
+resource "aws_vpc" "clustershop" {
+  cidr_block           = "172.20.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  instance_tenancy     = "default"
+  tags = {
+    Name = "clustershop"
+    Env  = "prod"
+  }
+}
+------------------------------------------------------------------------------------------------------
+# Dependend Resource
+resource "aws_instance" "foo" {
+  # ... other arguments ...
+
+  depends_on = [aws_internet_gateway.gw]
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "clustershop_igw" {
+  vpc_id = aws_vpc.clustershop.id
+
+  tags = {
+    Name = "clustershop_igw"
+  }
+}
+---------------------------------------------------------------------------------------------------------------
+# subnets
+resource "aws_subnet" "clustershop-subnet-public1" {
+  vpc_id     = aws_vpc.clustershop.id
+  cidr_block = "172.20.1.0/24"
+  #map_public_ip_on_launch = true
+  tags = {
+    Name = "clustershop-subnet-public1"
+  }
+}
+----------------------------------------------------------------------------------------------------------
+
+# Route Table for Public Subnet
+resource "aws_route_table" "clustershop_public_rt" {
+  vpc_id = aws_vpc.clustershop.id
+
+  route {
+    cidr_block = "0.0.0.0/0"  # Default route to the internet
+    gateway_id = aws_internet_gateway.clustershop_igw.id
+  }
+
+  tags = {
+    Name = "clustershop_public_rt"
+    Env  = "prod"
+  }
+}
+# Associate Public Subnet with Public Route Table
+resource "aws_route_table_association" "clustershop_public1_assoc" {
+  subnet_id      = aws_subnet.clustershop_subnet_public1.id
+  route_table_id = aws_route_table.clustershop_public_rt.id
+}
+
+resource "aws_route_table_association" "clustershop_public2_assoc" {
+  subnet_id      = aws_subnet.clustershop_subnet_public2.id
+  route_table_id = aws_route_table.clustershop_public_rt.id
+}
+----------------------------------------------------------------------------------------------------------------
+
+# Route Table for Private Subnet
+resource "aws_route_table" "clustershop_private_rt" {
+  vpc_id = aws_vpc.clustershop.id
+
+  route {
+    cidr_block = "0.0.0.0/0"  # Internet_bound traffic
+    nat_gateway_id = aws_nat_gateway.clustershop_nat.id
+  }
+
+  tags = {
+    Name = "clustershop_private_rt"
+    Env  = "prod"
+  }
+  # Ensure the NAT Gateway is created
+  depends_on = [aws_nat_gateway.clustershop_nat]
+
+}
+
+# Associate Private Subnet with Private Route Table
+resource "aws_route_table_association" "clustershop_subnet_private1_assoc" {
+  subnet_id      = aws_subnet.clustershop_private_subnet1.id
+  route_table_id = aws_route_table.clustershop_private_rt.id
+}
+-------------------------------------------------------------------------------------------------------------------
+
